@@ -1,0 +1,344 @@
+---
+title: "Descriptive Statistics"
+author: "Ainhoa Calleja Rodriguez"
+date: "2025-01-24"
+output: 
+ html_document:
+   self_contained: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+rm(list = ls())
+# Load the YAML configuration file
+working_path <- "~/Documents/INIA/analysis_ainhoa/analysis_yaml/"
+config <- yaml::read_yaml(paste0(working_path, "P21GUD1.yaml"))
+```
+
+# *Pinus sylvestris* provenance test (`r config$provenance_test`)
+Descriptive statistics and graphs of the raw phenotypic data in the provenance test for the trial: `r config$trial_name`.
+
+
+## Trial `r config$trial_name`
+```{r, echo=FALSE, message=FALSE, warning=FALSE, results = 'hide'}
+
+# Load functions needed. bafun.R is a script with generic functions to create basic statistics and graphs
+bafun_path <- "~/Documents/INIA/analysis_ainhoa/bafun.R"   
+source(bafun_path)
+
+# Load (install) packages
+packages <- c("yaml","ggplot2", "dplyr", "readxl","tidyr", "viridis", "tidyverse", "summarytools", "gridExtra", "grid", "scales")
+lapply(packages, install_and_load)
+
+# Load the configuration file
+# working_path <- "~/Documents/INIA/analysis_ainhoa/yaml_files/"
+# config <- yaml::read_yaml(paste0(working_path, "P21BAZ.yaml"))
+
+trial_name <- config$trial_name
+
+# Check the file extension
+input_path <- config$input_path
+sheet_name <- config$sheet_name
+if (grepl("\\.(xls|xlsx)$", input_path, ignore.case = TRUE)) {
+  # If the file is an Excel file
+  sheet_name <- config$sheet_name
+  df <- read_excel(input_path, sheet = sheet_name, na = c(".Z", ".Q", ".z", ".q"))
+} else if (grepl("\\.csv$", input_path, ignore.case = TRUE)) {
+  # If the file is a CSV file
+  df <- read.csv(input_path, stringsAsFactors = TRUE)
+} else {
+  stop("Unsupported file format. Please provide a .xlsx or .csv file.")
+}
+
+# Load data from Excel file
+# input_path <- config$input_path
+# sheet_name <- config$sheet_name
+# df <- read_excel(input_path, sheet = sheet_name, na = c(".Z", ".Q", ".z",".q"))
+
+str(df)
+names(df)
+
+# Exclude specified columns
+exclude_cols <- config$exclude_columns
+df <- df[, !(names(df) %in% exclude_cols)]
+names(df)
+
+# Apply specific column renaming
+if (!is.null(config$rename_columns$specific_renames)) {
+  for (old_name in names(config$rename_columns$specific_renames)) {
+    new_name <- config$rename_columns$specific_renames[[old_name]]
+    if (old_name %in% colnames(df)) {
+      colnames(df)[colnames(df) == old_name] <- new_name
+    }
+  }
+}
+
+# Apply pattern-based column renaming
+if (!is.null(config$rename_columns$pattern_replacements)) {
+  for (pattern in names(config$rename_columns$pattern_replacements)) {
+    replacement <- config$rename_columns$pattern_replacements[[pattern]]
+    colnames(df) <- gsub(pattern, replacement, colnames(df))
+  }
+}
+
+# Check updated column names
+names(df)
+
+# Modify the data types of selected columns based on YAML configuration
+integer_columns <- config$column_transformations$integer_columns
+numeric_columns <- setdiff(names(df), c(integer_columns, config$column_transformations$numeric_columns$exclude))
+
+df <- df %>%
+  mutate(
+    across(all_of(integer_columns), as.integer),
+    across(all_of(numeric_columns), as.numeric)
+  )
+
+str(df)
+
+```
+
+## Descriptive statistics of all variables
+```{r, echo=FALSE, message=FALSE, warning=FALSE, fig.align='center'}
+#descr(df[, 10:52])
+summary(df)
+```
+
+## Height measurements
+```{r, echo=FALSE, message=FALSE, warning=FALSE, fig.align='center'}
+# Calculate summary statistics for Height
+
+# Reorder columns for desired variables
+H_vars <- grep(config$variable_groups$H_vars, colnames(df), value = TRUE)
+desired_order <- config$desired_order
+H_vars <- desired_order[desired_order %in% H_vars]
+descr(df[, H_vars])
+H_summ_stats <- calculate_summary(df, group_var = "PROV", target_vars = H_vars)
+
+```
+
+### Boxplots of height measured in different years
+```{r, echo=FALSE, message=FALSE, warning=FALSE, fig.width=7, fig.height=6, fig.align='center'}
+# Create boxplot
+#H_graphs <- create_graphs(df, group_var = "PROV", target_vars = H_vars, var_label = "Height", unit_label = "cm")
+H_graphs <- create_graphs(df = df, 
+                        group_var = "PROV", 
+                        target_vars = H_vars, 
+                        var_label = "Height", 
+                        unit_label = "cm", 
+                        ncol_p2 = 4,  # 4 columns for p2
+                        ncol_p3 = 5,  # 2 columns for p3
+                        ncol_p4 = 3,  # 5 columns for p4
+                        ncol_p5 = 3)  # 3 columns for p5
+
+H_graphs$Boxplot_Variable
+
+```
+
+### Boxplots of height-year and provenance
+```{r,  echo=FALSE, message=FALSE, warning=FALSE, fig.width=15, fig.height=13, fig.align='center'}
+H_graphs$Boxplot_Provenance1
+
+```
+
+### Boxplots height-year, per provenance
+```{r, echo=FALSE, message=FALSE, warning=FALSE, fig.width=15, fig.height=13, fig.align='center'}
+H_graphs$Boxplot_Provenance2
+```
+
+### Histograms height-year 
+```{r, echo=FALSE, message=FALSE, warning=FALSE, fig.width=11, fig.height=17, fig.align='center'}
+# Histogram
+H_graphs$Histogram
+
+```
+
+### Density plots of height-year
+```{r, echo=FALSE, message=FALSE, warning=FALSE, fig.width=11, fig.height=17, fig.align='center'}
+H_graphs$Density
+
+```
+
+## Base diameter (DB) measurements
+```{r, echo=FALSE, message=FALSE, warning=FALSE, fig.align='center'}
+DB_vars <- grep(config$variable_groups$DB_vars, colnames(df), value = TRUE)
+DB_summ_stats <- calculate_summary(df, group_var = "PROV", target_vars = DB_vars)
+descr(df[, DB_vars])
+#head(H_summ_stats)
+
+```
+
+### Boxplots of DB measured in different years
+```{r, echo=FALSE, message=FALSE, warning=FALSE, fig.width=3, fig.height=4, fig.align='center'}
+# Create boxplot
+DB_graphs <- create_graphs(df = df,
+                        group_var = "PROV",
+                        target_vars = DB_vars,
+                        var_label = "DB",
+                        unit_label = "mm",
+                        ncol_p2 = 4,
+                        ncol_p3 = 5,
+                        ncol_p4 = 2,
+                        ncol_p5 = 2)
+DB_graphs$Boxplot_Variable
+
+```
+
+### Boxplots of DB-year and provenance
+```{r,  echo=FALSE, message=FALSE, warning=FALSE, fig.width=7, fig.height=5, fig.align='center'}
+DB_graphs$Boxplot_Provenance1
+
+```
+
+### Boxplots DB-year, per provenance
+```{r, echo=FALSE, message=FALSE, warning=FALSE, fig.width=7, fig.height=9, fig.align='center'}
+DB_graphs$Boxplot_Provenance2
+```
+
+### Histograms of DB-year
+```{r, echo=FALSE, message=FALSE, warning=FALSE, fig.width=4, fig.height=3, fig.align='center'}
+# Histogram
+DB_graphs$Histogram
+
+```
+
+### Density plots of DB-year
+```{r, echo=FALSE, message=FALSE, warning=FALSE, fig.width=4, fig.height=3, fig.align='center'}
+DB_graphs$Density
+
+```
+
+## Diameter at Breast Height (DBH) and DN measurements
+```{r, echo=FALSE, message=FALSE, warning=FALSE, fig.align='center'}
+
+DBH_vars <- grep(config$variable_groups$DBH_vars, names(df), value = TRUE)
+# DN_vars <- grep("^DN", names(df), value = TRUE)  #all variables starting with DB
+#summary(df[,DBH_vars])
+# summary(df[,DN_vars])
+descr(df[, DBH_vars])
+# descr(df[,DN_vars])
+DBH_summ_stats <- calculate_summary(df, group_var = "PROV", target_vars = DBH_vars)  
+#head(H_summ_stats)
+
+```
+
+### Boxplots of DBH and DN measured in different years
+```{r, echo=FALSE, message=FALSE, warning=FALSE, fig.width=4, fig.height=4, fig.align='center'}
+# Create boxplot
+#DBH_graphs <- create_graphs(df, group_var = "PROV", target_vars = DBH_vars, var_label = "Diameter at Breast Height (DBH)", unit_label = "mm")
+DBH_graphs <- create_graphs(df = df, 
+                        group_var = "PROV", 
+                        target_vars = DBH_vars, 
+                        var_label = "Diameter at Breast Height (DBH)", 
+                        unit_label = "mm", 
+                        ncol_p2 = 4,  # 4 columns for p2
+                        ncol_p3 = 5,  # 2 columns for p3
+                        ncol_p4 = 4,  # 5 columns for p4
+                        ncol_p5 = 4)  # 3 columns for p5
+DBH_graphs$Boxplot_Variable
+
+# DN_graphs <- create_graphs(df = df,
+#                            group_var = "PROV", 
+#                            target_vars = DN_vars, 
+#                            var_label = "Diameter Forked Trees (DN)", 
+#                            unit_label = "mm",
+#                            ncol_p2 = 4,
+#                            ncol_p3 = 5,
+#                            ncol_p4 = 1,
+#                            ncol_p5 = 1)
+# DN_graphs$Boxplot_Variable
+
+```
+
+### Boxplots of DBH-year and provenance, DN
+```{r,  echo=FALSE, message=FALSE, warning=FALSE, fig.width=9, fig.height=5, fig.align='center'}
+DBH_graphs$Boxplot_Provenance1
+#DN_graphs$Boxplot_Provenance1
+```
+
+### Boxplots DBH-year, per provenance
+```{r, echo=FALSE, message=FALSE, warning=FALSE, fig.width=8, fig.height=9, fig.align='center'}
+DBH_graphs$Boxplot_Provenance2
+#DN_graphs$Boxplot_Provenance2
+```
+
+### Histograms of DBH-year
+```{r, echo=FALSE, message=FALSE, warning=FALSE, fig.width=7, fig.height=3, fig.align='center'}
+# Histogram
+DBH_graphs$Histogram
+#DN_graphs$Histogram
+
+```
+
+### Density plots of DBH-year and DN
+```{r, echo=FALSE, message=FALSE, warning=FALSE, fig.width=7, fig.height=3, fig.align='center'}
+DBH_graphs$Density
+#DN_graphs$Density
+```
+
+## Scatter plots H vs DB
+```{r, echo=FALSE, message=FALSE, warning=FALSE, fig.width=10, fig.height=18, fig.align='center'}
+# Extract DBH and H, and get the last two digits
+rel_vars <- grep("^H|^DB", names(df), value = TRUE)
+var_digits <- gsub(".*(\\d{2})$", "\\1", rel_vars)
+# new df
+df_vars <- data.frame(variable = rel_vars, digits = var_digits)
+# Group by the digits 
+df_grouped <- df_vars %>%
+  group_by(digits) %>%
+  arrange(variable) %>%
+  mutate(pair = list(variable))
+
+# Create the plots
+plots <- list()
+
+for(i in 1:nrow(df_grouped)) {
+  pair <- df_grouped$pair[[i]]
+  
+  # Check if both H and DB variables exist before attempting to plot
+  var1 <- pair[1]
+  var2 <- pair[2]
+  
+  # If there is no match for the digits of DB or H, use the previous 
+  if(length(pair) == 1) {
+    var2 <- ifelse(grepl("^H", var1), gsub("H", "DB", var1), gsub("DB", "H", var1))
+    if (!var2 %in% names(df)) next  # Skip if the second variable doesn't exist
+  }
+  
+  # Paired plots
+  if (var1 %in% names(df) && var2 %in% names(df)) {
+    p <- ggplot(df, aes_string(x = var1, y = var2)) + 
+      geom_point(size = 1) + 
+      geom_smooth(method = "lm") + 
+      ggtitle(paste(trial_name)) + 
+      xlab(paste(var1)) + 
+      ylab(paste(var2)) + 
+      scale_x_continuous(breaks = scales::pretty_breaks(n = 10)) + 
+      scale_y_continuous(breaks = scales::pretty_breaks(n = 10)) +
+      theme(axis.text.x = element_text(angle = 45, hjust = 1))
+    
+    plots[[length(plots) + 1]] <- p
+  }
+}
+
+
+if (length(plots) > 0) {
+  grid.arrange(grobs = plots, ncol = 2)
+} else {
+  print("No valid plots to display.")
+}
+
+```
+
+## Paired scatterplots H
+```{r, echo=FALSE, message=FALSE, warning=FALSE, fig.width=10, fig.height=22, fig.align='center'}
+paired_scatter(df, H_vars, ncol = 3)
+```
+
+## Paired scatterplots DBH
+```{r, echo=FALSE, message=FALSE, warning=FALSE, fig.width=10, fig.height=3, fig.align='center'}
+
+# paired_scatter(df, DBH_vars, ncol = 3)
+
+
+```
