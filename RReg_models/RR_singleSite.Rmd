@@ -1,0 +1,404 @@
+---
+title: "RRegression_singleSite"
+author: "Ainhoa Calleja Rodriguez"
+date: "2025-02-07"
+output:
+  html_document:
+    self_contained: true
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+rm(list = ls())
+# Load the YAML configuration file
+working_path <- "~/Documents/INIA/analysis_ainhoa/analysis_yaml/"
+config <- yaml::read_yaml(paste0(working_path, "P21NAV.yaml"))
+```
+
+# Single Site Random Regression Analysis for `r config$trial_name` (script still under development).
+
+The variables analised in this script were `r config$desired_order`. This variables represent repeated measurements of the same variable across multiple years (i.e., same individuals recorded multiple times). Thus random effect regression was chosen as the method to analysed these repeated measurements. The goal was to obtain a linear regression for each provenance across years, and to obtain the temporal correlation. 
+
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, results = 'hide'}
+
+#Load functions
+bafun_path <- "~/Documents/INIA/analysis_ainhoa/bafun.R"
+source(bafun_path)
+
+# Load (install) necessary packages
+packages <- c("ggplot2", "dplyr", "readxl","tidyr", "viridis", "tidyverse", "gridExtra", "grid", "scales", "asreml", "ggrepel", "kableExtra")
+lapply(packages, install_and_load)
+
+# Load data according to file extension
+trial_name <- config$trial_name
+input_path <- config$input_path
+sheet_name <- config$sheet_name
+
+if (grepl("\\.(xls|xlsx)$", input_path, ignore.case = TRUE)) {
+  # Excel file
+  sheet_name <- config$sheet_name
+  df <- read_excel(input_path, sheet = sheet_name, na = c(".Z", ".Q", ".z", ".q"))
+} else if (grepl("\\.csv$", input_path, ignore.case = TRUE)) {
+  # CSV file
+  df <- read.csv(input_path, stringsAsFactors = TRUE)
+} else {
+  stop("Unsupported file format. Please provide a .xlsx or .csv file.")
+}
+str(df)
+names(df)
+
+# Columns to exclude
+exclude_cols <- config$exclude_columns
+df <- df[, !(names(df) %in% exclude_cols)]
+names(df)
+
+# column renaming
+if (!is.null(config$rename_columns$specific_renames)) {
+  for (old_name in names(config$rename_columns$specific_renames)) {
+    new_name <- config$rename_columns$specific_renames[[old_name]]
+    if (old_name %in% colnames(df)) {
+      colnames(df)[colnames(df) == old_name] <- new_name
+    }
+  }
+}
+
+# Pattern renaming
+if (!is.null(config$rename_columns$pattern_replacements)) {
+  for (pattern in names(config$rename_columns$pattern_replacements)) {
+    replacement <- config$rename_columns$pattern_replacements[[pattern]]
+    colnames(df) <- gsub(pattern, replacement, colnames(df))
+  }
+}
+
+names(df)
+
+# column type change based on YAML
+integer_columns <- config$column_transformations$integer_columns
+numeric_columns <- setdiff(names(df), c(integer_columns, config$column_transformations$numeric_columns$exclude))
+
+df <- df %>%
+  mutate(
+    across(all_of(integer_columns), as.integer),
+    across(all_of(numeric_columns), as.numeric)
+  )
+
+str(df)
+
+```
+
+Check missing values:
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, fig.align='center'}
+# NA values for columns with lower H values than previous years
+height_cols <- grep("^H\\d{2}$", names(df), value = TRUE)
+na_count <- colSums(is.na(df[ , height_cols]))
+non_na_count <- colSums(!is.na(df[ , height_cols]))
+check_NAs <- data.frame(Column = height_cols, NA_Count = na_count, Non_NA_Count = non_na_count)
+check_NAs
+# for (i in 2:length(height_cols)) {
+#   current_col <- height_cols[i]
+#   
+#   for (j in seq_len(nrow(df))) {
+#     # last height value
+#     prev_value <- NA
+#     for (k in (i - 1):1) {  
+#       if (!is.na(df[j, height_cols[k]])) {
+#         prev_value <- df[j, height_cols[k]]
+#         break
+#       }
+#     }
+#     
+#     if (!is.na(prev_value) && !is.na(df[j, current_col]) && df[j, current_col] < prev_value) {
+#       df[j, current_col] <- NA  
+#     }
+#   }
+# }
+
+
+```
+
+
+The dataframe needed to be transformed into a long format dataframe. New variables were also generated: Height, HYY, Year, Age and YAP (years after planting). Some graphs were plotted to check the pattern of the data across ages. 
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE, fig.align='center'}
+#head(df); tail(df)
+#aggregate(cbind(H95,H96,H97,H98,H99,H00,H01,H02,H03,H04,H05,H10,H15) ~ PROV + REP, FUN = mean, data=df)
+#str(df)
+
+# df to long format, variable Height and HYY
+df_long <- reshape(df, 
+                   varying = list(names(df)[7:19]), # Columns H95 to H15
+                   v.names = "Height",              
+                   timevar = "HYY",                
+                   times = names(df)[7:19],        
+                   idvar = "REG",                  
+                   direction = "long")
+
+rownames(df_long) <- NULL
+head(df_long); tail(df_long)
+# df_long$Year <- gsub("H", "", df_long$Year)
+
+#Create Year, Age and YAP variables
+df_long$Year <- as.numeric(sub("H", "", df_long$HYY))  
+df_long$Year <- ifelse(df_long$Year < 90, df_long$Year + 2000, df_long$Year + 1900)  
+df_long$Age <- df_long$Year - 1995 + 6
+df_long$YAP <- df_long$Age - 2
+
+# as.factor() required for ASRemlR
+# df_long$COL <- as.factor(df_long$COL)
+# df_long$ROW <- as.factor(df_long$ROW)
+df_long$PROV <- as.factor(df_long$PROV)
+df_long$REP <- as.factor(df_long$REP)
+df_long$REG <- as.factor(df_long$REG)
+df_long$POS <- as.factor(df_long$POS)
+#df_long$Age <- as.factor(df_long$Age)
+
+# Data evaluation prior to analysis
+table(df$PROV, df$REP)
+hist(df_long$Height)
+boxplot(Height ~ Age, data = df_long)
+boxplot(Height ~ YAP, data = df_long)
+meanH_A <- aggregate(Height ~ Age, mean, data = df_long)
+varH_A <- aggregate(Height ~ Age, var, data = df_long)
+#Mean and var by PROV and Age
+meanH_AP <- aggregate(Height ~ PROV + Age, mean, data = df_long)
+varH_AP <- aggregate(Height ~ PROV + Age, var, data = df_long)
+
+```
+
+Plotting Age - Height, by provenance
+```{r, echo=FALSE, message=FALSE, warning=FALSE, fig.width=11, fig.height=7, fig.align='center'}
+labels_data <- meanH_AP %>%
+  group_by(PROV) %>%
+  filter(Age == max(Age))  # Select the last available Age for each PROV
+
+H_AP_plot <- ggplot(data=meanH_AP, aes(x=Age, y=Height, group = PROV)) +
+  geom_line(linewidth=0.7, aes(color=PROV)) + 
+  #geom_text(data=labels_data, aes(label=PROV), hjust=-0.1, size=4) + 
+  geom_text_repel(data=labels_data, aes(label=PROV), size=4, direction = "y", nudge_x = 2) +  
+  ylab("Height (cm)") + xlab("Age (years)") 
+
+H_AP_plot
+
+```
+
+## Data linearisation
+The data needed to be transformed (Linearization) according to the previous plots and mean values (different means per PROV and year).  
+Model used to transform the data (the intercept and the slope):
+$$ln(y_i) = ln(\alpha*) + \frac\beta x_i$$
+$$y_i = \alpha + \beta x^*_i + e_i$$
+To choose the most appropriate constant "c" used in the standarization of the data, the effect of different constant values were plotted to aid choose the appropriate one. The constants were added to avoid any infinitive value in the data due to the linearization.
+```{r, echo=TRUE, message=FALSE, warning=FALSE, fig.width=11, fig.height=7, fig.align='center'}
+# Check impact of different c values in linearity
+df_imp <- data.frame(Age = 6:26)
+df_imp$iAge_0 <- 1 / (df_imp$Age)
+df_imp$iAge_3 <- 1 / (df_imp$Age + 3)
+df_imp$iAge_5 <- 1 / (df_imp$Age + 5)
+df_imp$iAge_7 <- 1 / (df_imp$Age + 7)
+df_imp$iAge_10 <- 1 / (df_imp$Age + 10)
+df_imp$iAge_20 <- 1 / (df_imp$Age + 20)
+
+df_imp_long <- df_imp %>%
+  pivot_longer(cols = starts_with("iAge_"), names_to = "Transformation", values_to = "iAge_Value")
+
+ggplot(df_imp_long, aes(x = Age, y = iAge_Value, color = Transformation)) +
+  geom_line(size = 1) +
+  labs(
+    title = "Impact of Different Transformations on iAge",
+    x = "Age (years)",
+    y = "Transformed Age (iAge)"
+  ) +
+  scale_color_brewer(palette = "Set1") +
+  theme(legend.position = "bottom")
+
+# Linearization (transformation) of the data
+
+# Model
+# y = alpha*exp(beta/(x+c))
+# ln(y+c) = alpha* + beta*(1/(x+c))
+
+df_long$lnY <- log(df_long$Height+0) # +0, is added to avoid the log of 0 (inf)
+df_long$iAge <- 1/(df_long$Age+5)  # (1 / (Age + c)): inverse age transformation 
+#log(Age): if growth follows an exponential pattern #scale() to center the mean 0 and scales the var
+
+hist(df_long$Height)
+hist(df_long$lnY)
+boxplot(Height~Age, data=df_long)
+boxplot(lnY~iAge, data=df_long)
+
+
+mean_lnY_AP <- aggregate(lnY ~ PROV + iAge, FUN = function(x) mean(x, na.rm = TRUE), data = df_long)
+
+lnY_AP_plot <- ggplot(data=mean_lnY_AP, aes(x=iAge, y=lnY, group = PROV)) +
+  geom_line(linewidth=0.7, aes(color=PROV)) + 
+  ylab("lnY") + xlab("iAge") 
+
+lnY_AP_plot
+
+```
+
+# Random Regression Models
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE, fig.width=11, fig.height=7, fig.align='center'}
+# as.factor() required for ASRemlR
+# df_long$COL <- as.factor(df_long$COL)
+# df_long$ROW <- as.factor(df_long$ROW)
+df_long$PROV <- as.factor(df_long$PROV)
+df_long$REP <- as.factor(df_long$REP)
+df_long$REG <- as.factor(df_long$REG)
+df_long$POS <- as.factor(df_long$POS)
+df_long$YAP <- as.factor(df_long$YAP)
+#df_long$Age <- as.factor(df_long$Age)
+
+table(df_long$PROV, df_long$REP)
+
+```
+
+## General model
+
+The general model used was:
+$$y_{ij} = (\alpha + a_i) + (\beta + b_i)x_{ij} + e_{ij}$$
+$$y_{ij} = (\alpha + \beta x_{ij}) + (a_i + b_i x_{ij}) + e_{ij}$$
+where $\alpha$ (overall intercept) and $\beta$ (overall slope) represent the fixed effect population regression, whereas $a_i$ (random intercept (per PROV)) and $b_i$ (random slope(PER PROV)) represent the random deviations. 
+
+
+### Model 1. Independent random terms and residuals.
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE, fig.width=11, fig.height=7, fig.align='center'}
+rr1 <- asreml(fixed = lnY ~ 1 + REP + iAge,
+              random = ~ PROV + PROV:iAge,
+              residual = ~ idv(units),
+              na.action = na.method(y = "include", x="include"),
+              data = df_long)
+wald(rr1)
+summary(rr1)$varcomp
+rr1$loglik # 14064.89
+summary(rr1)$aic
+summary(rr1)$bic
+
+```
+
+### Model 2. Correlated random effects and independent residuals
+The deviations are correlated as:
+
+$$
+V\begin{bmatrix}
+  a_{i} \\
+  b_{i}
+\end{bmatrix} = \begin{bmatrix}
+  \sigma^2_{a} & \sigma_{ab} \\
+  \sigma_{ab} & \sigma^2_{b}
+\end{bmatrix}
+$$
+
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE, fig.width=11, fig.height=7, fig.align='center'}
+length(levels(df_long$PROV))  ## 18 levels
+length(levels(df_long$REG))   ## 1152 levels
+asreml.options(maxit=25, gammaPar = FALSE, ai.sing = TRUE, fail="soft", workspace = "4gb")
+rr2 <- asreml(fixed = lnY ~ 1 + REP + iAge,
+              random = ~str(~PROV + PROV:iAge, ~corgh(2):id(19)),
+              residual = ~idv(units),
+              na.action = na.method(y = "include", x="include"),
+              data = df_long)
+
+wald(rr2)
+#summary(rr2)$varcomp
+kable(as.data.frame(summary(rr2)$varcomp), format = "html", digits = 6) %>%
+  kable_styling(full_width = FALSE) %>%
+  scroll_box(width = "100%")
+rr2$loglik  #14065.31
+summary(rr2)$aic
+summary(rr2)$bic
+#model comparisson
+lrt.asreml(rr1,rr2,boundary = FALSE)
+
+```
+
+### Model 3. Correlated random effects and correlated residuals. The temporal correlation used was first order autoregressive (ar1v).
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE, fig.width=11, fig.height=7, fig.align='center'}
+length(levels(df_long$REG))
+length(levels(df_long$YAP))
+df_long <- df_long[order(df_long$REG, decreasing = FALSE),]
+df_long <- df_long[order(df_long$YAP, decreasing = FALSE),]
+asreml.options(maxit=25, gammaPar = FALSE, ai.sing = TRUE, fail="soft", workspace = "4gb")
+
+initR <- c(0.5, 0.07) #initial values
+rr3 <- asreml(fixed = lnY ~ 1 + REP + iAge,
+              random = ~str(~PROV + PROV:iAge, ~corgh(2):id(19)),
+              residual = ~ar1v(YAP, init=initR):REG,
+              na.action = na.method(y = "include", x="include"),
+              data = df_long)
+
+wald(rr3)
+#summary(rr3)$varcomp
+kable(as.data.frame(summary(rr3)$varcomp), format = "html", digits = 6) %>%
+  kable_styling(full_width = FALSE) %>%
+  scroll_box(width = "100%")
+rr3$loglik # 26621.04
+summary(rr3)$aic
+summary(rr3)$bic
+lrt.asreml(rr2,rr3,boundary = FALSE)
+plot(rr3)
+
+# Outliers
+res <- resid(rr3)
+which.min(res)
+df_long[which.min(res),]
+df_long[which.max(res),]
+
+```
+
+## Getting outputs (BLUE, BLUP, $\alpha$, $\beta$, $a_i$ and $b_i$) from the model:
+```{r, , echo=TRUE, message=FALSE, warning=FALSE, fig.width=11, fig.height=7, fig.align='center'}
+#BLUES
+BLUES.rr3 <- summary(rr3, coef = TRUE)$coef.fixed
+
+# Getting alpha -> overall intercept
+#1/(0+5) 
+alpha_int <- predict.asreml(rr3, classify='(Intercept):iAge', levels=list(iAge=0))$pvals  #overall intercept
+alpha_int  # 8.466253
+# Getting beta -> overall slope
+BLUES.rr3
+beta_slope <- BLUES.rr3[6,1]  # -45.78893
+
+#BLUPS
+BLUP.rr3 <- summary(rr3, coef = TRUE)$coef.random
+head(BLUP.rr3); tail(BLUP.rr3)
+dim(BLUP.rr3)
+
+BLUP_rr3a <- as.data.frame(BLUP.rr3[1:18,])  #PROV
+BLUP_rr3b <- as.data.frame(BLUP.rr3[19:36,])  #PROV:iAge
+
+RRcoef <- data.frame(PROV = rownames(BLUP_rr3a), BLUP_rr3a = BLUP_rr3a$solution, BLUP_rr3b = BLUP_rr3b$solution)
+
+# Getting a and b per PROV
+RRcoef$a_int <- alpha_int$predicted.value + RRcoef$BLUP_rr3a
+RRcoef$b_slope <- beta_slope + RRcoef$BLUP_rr3b
+head(RRcoef); tail(RRcoef)
+
+```
+
+## Predictions and back transforming to the original Ages and Heights
+```{r, , echo=TRUE, message=FALSE, warning=FALSE, fig.width=11, fig.height=7, fig.align='center'}
+# Predictions for age 40
+iAge_40 <- 1/(40+5)
+pred_40Age <- predict.asreml(rr3, classify = "PROV:iAge", levels = list(iAge=iAge_40))$pvals
+pred_40Age
+
+# Predictions for the measured ages
+m_iAges <- unique(df_long$iAge)
+m_iAges <- 1/(seq(6,26,1)+5)
+pred_iAges <- predict.asreml(rr3, classify = "PROV:iAge", levels = list(iAge=m_iAges))$pvals
+pred_Ages <- as.data.frame(pred_iAges)
+
+# Back transforming to original Ages
+pred_Ages$Age <- round(1/pred_Ages$iAge - 5.0)
+pred_Ages$pred_Height <- exp(pred_Ages$predicted.value)
+head(pred_Ages); tail(pred_Ages)
+pred_Ages
+
+save.image(file = paste0(config$output_path, config$output_file))
+
+```
